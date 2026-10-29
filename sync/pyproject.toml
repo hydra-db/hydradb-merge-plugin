@@ -1,0 +1,9 @@
+[project]
+name = "merge-hydradb"
+version = "0.1.0"
+description = "Sync Merge unified-API records into HydraDB knowledge."
+requires-python = ">=3.9"
+dependencies = ["requests>=2.28"]
+
+[tool.setuptools]
+py-modules = ["merge_to_hydradb"]
