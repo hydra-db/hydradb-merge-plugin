@@ -155,11 +155,11 @@ def ingest_items(
         batch = items[start : start + batch_size]
         resp = http.post(
             f"{cfg.base_url}/context/ingest",
-            headers={"Authorization": f"Bearer {cfg.api_key}"},
+            headers={"Authorization": f"Bearer {cfg.api_key}", "API-Version": "2"},
             files={
                 "tenant_id": (None, cfg.database),
                 "sub_tenant_id": (None, cfg.collection),
-                "kind": (None, "knowledge"),
+                "type": (None, "knowledge"),
                 "app_knowledge": (None, json.dumps(batch)),
             },
             timeout=30,
@@ -168,7 +168,7 @@ def ingest_items(
         body = resp.json()
         results = body.get("results")
         if isinstance(results, list) and results:
-            failed = [r for r in results if r.get("error") or r.get("error_code")]
+            failed = [r for r in results if r.get("status") == "failed" or r.get("error") or r.get("error_code")]
             sent += len(batch) - len(failed)
             for r in failed:
                 print(
@@ -212,8 +212,6 @@ def main() -> None:
 
     return : none (None) - Prints the number of records synced.
     """
-    import sys
-
     category = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("MERGE_CATEGORY", "ticketing")
     model = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("MERGE_MODEL", "tickets")
     merge = MergeConfig(
