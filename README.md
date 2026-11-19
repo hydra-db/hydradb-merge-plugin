@@ -59,9 +59,41 @@ default to `ticketing` and `tickets`.
 | `HYDRADB_API_KEY` | yes | HydraDB API key from the dashboard. |
 | `HYDRADB_DATABASE` | yes | Target HydraDB database (tenant). |
 | `HYDRADB_COLLECTION` | no | Sub-tenant scope within the database. |
+| `HYDRADB_LAYOUT` | no | `split` (default) or `unified`; use unified only after production rollout is confirmed. |
 | `MERGE_CATEGORY` | no | Default category when no argument is given. |
 | `MERGE_MODEL` | no | Default model when no argument is given. |
 | `MERGE_MODIFIED_AFTER` | no | ISO 8601 cutoff for an incremental pull. |
+
+## Unified rollout preparation
+
+Unified support is not enabled in production. Keep `HYDRADB_LAYOUT=split`
+until your database's production rollout is confirmed. Then explicitly select
+`HYDRADB_LAYOUT=unified` (or `HydraDBConfig(..., layout="unified")`).
+Only these two layouts are accepted; no failed write is retried in another layout.
+
+Unified sync sends JSON `{database, collection, context: [...]}` without a
+split selector. Each generated record keeps its `merge-{model}-{record-id}`
+identity as `context_id`, its title and text, and maps `infer` to `enrich`.
+Records without an ID or remote ID are rejected in unified sync rather than
+overwriting one another. Existing generated records have no separate metadata;
+unsupported custom item fields are rejected rather than silently dropped.
+Unified acknowledgment counts come from enveloped `data.success_count`, so
+per-item failures aren't reported as accepted. Split transport and acknowledgment
+handling remain unchanged.
+
+This direct HTTP adapter needs no SDK release. No changes are made to the
+Agent Handler MCP connector registration.
+
+## Offline tests
+
+From the repository root:
+
+```bash
+pip install -e "sync[test]"
+python -m pytest -q
+```
+
+Tests mock HTTP; they never contact Merge or HydraDB.
 
 ## Also: HydraDB as a tool for Merge agents
 
