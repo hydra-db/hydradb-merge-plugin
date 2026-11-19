@@ -29,6 +29,11 @@ class HydraDBConfig:
     database: str
     collection: str = ""
     base_url: str = HYDRADB_BASE
+    layout: str = "split"
+
+    def __post_init__(self) -> None:
+        if self.layout not in ("split", "unified"):
+            raise ValueError("layout must be split or unified")
 
 
 def _merge_headers(cfg: MergeConfig) -> dict[str, str]:
@@ -107,7 +112,9 @@ def fetch_records(
         params = None
 
 
-def record_to_item(record: dict[str, Any], model: str) -> dict[str, Any]:
+def record_to_item(
+    record: dict[str, Any], model: str, *, layout: str = "split"
+) -> dict[str, Any]:
     """
     Map a Merge record to a HydraDB knowledge item.
 
@@ -116,6 +123,8 @@ def record_to_item(record: dict[str, Any], model: str) -> dict[str, Any]:
     return : item (dict) - A HydraDB knowledge item with a stable id.
     """
     rid = str(record.get("id") or record.get("remote_id") or "")
+    if layout == "unified" and not rid.strip():
+        raise ValueError("Unified Merge records require an id or remote_id")
     title = (
         record.get("name")
         or record.get("subject")
@@ -153,19 +162,57 @@ def ingest_items(
     sent = 0
     for start in range(0, len(items), batch_size):
         batch = items[start : start + batch_size]
-        resp = http.post(
-            f"{cfg.base_url}/context/ingest",
-            headers={"Authorization": f"Bearer {cfg.api_key}", "API-Version": "2"},
-            files={
-                "tenant_id": (None, cfg.database),
-                "sub_tenant_id": (None, cfg.collection),
-                "type": (None, "knowledge"),
-                "app_knowledge": (None, json.dumps(batch)),
-            },
-            timeout=30,
-        )
+        if cfg.layout == "unified":
+            context = []
+            for item in batch:
+                if set(item) - {"id", "title", "content", "infer"}:
+                    raise ValueError("Unsupported unified Merge item fields")
+                content = item.get("content")
+                if not isinstance(content, dict) or set(content) != {"text"}:
+                    raise ValueError("Unified Merge items require content with only text")
+                if not item.get("id"):
+                    raise ValueError("Unified Merge items require a stable id")
+                context.append({
+                    "context_id": item["id"],
+                    "title": item.get("title", ""),
+                    "text": content["text"],
+                    "enrich": item.get("infer", True),
+                })
+            resp = http.post(
+                f"{cfg.base_url}/context/ingest",
+                headers={"Authorization": f"Bearer {cfg.api_key}", "API-Version": "2"},
+                json={"database": cfg.database, "collection": cfg.collection, "context": context},
+                timeout=30,
+            )
+        else:
+            resp = http.post(
+                f"{cfg.base_url}/context/ingest",
+                headers={"Authorization": f"Bearer {cfg.api_key}", "API-Version": "2"},
+                files={
+                    "tenant_id": (None, cfg.database),
+                    "sub_tenant_id": (None, cfg.collection),
+                    "type": (None, "knowledge"),
+                    "app_knowledge": (None, json.dumps(batch)),
+                },
+                timeout=30,
+            )
         resp.raise_for_status()
         body = resp.json()
+        if cfg.layout == "unified":
+            if not body.get("success", False):
+                raise RuntimeError(f"HydraDB ingest failed: {body.get('error')}")
+            data = body.get("data") or {}
+            count = data.get("success_count")
+            if type(count) is not int or not 0 <= count <= len(batch):
+                raise RuntimeError("HydraDB unified ingest returned an invalid success_count")
+            sent += count
+            for result in data.get("results") or []:
+                if result.get("status") == "failed" or result.get("error") or result.get("error_code"):
+                    print(
+                        f"HydraDB ingest skipped {result.get('id')}: {result.get('error') or result.get('error_code')}",
+                        file=sys.stderr,
+                    )
+            continue
         results = body.get("results")
         if isinstance(results, list) and results:
             failed = [r for r in results if r.get("status") == "failed" or r.get("error") or r.get("error_code")]
@@ -200,7 +247,7 @@ def sync(
     return : synced (int) - Number of records ingested.
     """
     items = [
-        record_to_item(r, model)
+        record_to_item(r, model, layout=hydradb.layout)
         for r in fetch_records(merge, category, model, modified_after=modified_after)
     ]
     return ingest_items(hydradb, items)
@@ -222,6 +269,7 @@ def main() -> None:
         api_key=os.environ["HYDRADB_API_KEY"],
         database=os.environ["HYDRADB_DATABASE"],
         collection=os.environ.get("HYDRADB_COLLECTION", ""),
+        layout=os.environ.get("HYDRADB_LAYOUT", "split"),
     )
     count = sync(merge, hydradb, category, model, os.environ.get("MERGE_MODIFIED_AFTER"))
     print(f"Synced {count} {category}/{model} records into HydraDB.")
